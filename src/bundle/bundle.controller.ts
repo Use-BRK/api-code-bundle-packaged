@@ -13,6 +13,8 @@ interface DeployBundleResponse {
   success: true;
   message: string;
   deployedAt: string;
+  inputSize: number;
+  outputSize: number;
 }
 
 @Controller('bundle')
@@ -23,7 +25,7 @@ export class BundleController {
 
   @Post()
   @HttpCode(HttpStatus.OK)
-  deploy(@Body() dto: CreateBundleDto): DeployBundleResponse {
+  async deploy(@Body() dto: CreateBundleDto): Promise<DeployBundleResponse> {
     this.logger.log(
       `POST /bundle recebido (content: ${dto.content.length} chars)`,
     );
