@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: api-code-bundle-packaged:latest
+    container_name: api-code-bundle-packaged
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      BUNDLE_DB_PATH: /app/data/bundle.sqlite
+      API_KEY: ${API_KEY:?defina API_KEY no .env antes de subir}
+    volumes:
+      - bundle-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/script.js',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  bundle-data:
