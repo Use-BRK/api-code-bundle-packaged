@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { minify } from 'terser';
+import { transform as esbuildTransform } from 'esbuild';
+import { minify as terserMinify } from 'terser';
 import { StorageService } from '../storage/storage.service';
 import { CreateBundleDto } from './dto/create-bundle.dto';
 
@@ -127,35 +128,80 @@ export class BundleService {
     return -1;
   }
 
+  // Pré-processa JS removendo lixos comuns que quebram parsers:
+  // - BOM (U+FEFF)
+  // - HTML comments legados (<!-- ... --> em borda de linha)
+  // - linhas iniciadas por shebang (#!) que não são válidas em scripts no browser
+  private sanitizeJs(js: string): string {
+    let out = js.replace(/^﻿/, '');
+    if (out.startsWith('#!')) {
+      out = out.replace(/^#![^\n]*\n?/, '');
+    }
+    out = out.replace(/<!--[\s\S]*?-->/g, '');
+    return out.trim();
+  }
+
   private async tryMinify(
-    js: string,
+    rawJs: string,
   ): Promise<{ code: string; minified: boolean; warning?: string }> {
+    const js = this.sanitizeJs(rawJs);
+    if (!js) {
+      return { code: rawJs, minified: false, warning: 'Conteúdo vazio após sanitização' };
+    }
+
+    const esb = await this.tryEsbuild(js);
+    if (esb.ok) return { code: esb.code, minified: true };
+
+    const ter = await this.tryTerser(js);
+    if (ter.ok) return { code: ter.code, minified: true };
+
+    const detail = esb.error ?? ter.error ?? 'erro desconhecido';
+    this.logger.warn(`esbuild e terser falharam (${detail}) — salvando JS original`);
+    return {
+      code: js,
+      minified: false,
+      warning: `Não foi possível minificar (${detail}) — bundle salvo sem minificar`,
+    };
+  }
+
+  private async tryEsbuild(
+    js: string,
+  ): Promise<{ ok: true; code: string } | { ok: false; error: string }> {
     try {
-      const result = await minify(js, {
+      const result = await esbuildTransform(js, {
+        loader: 'js',
+        minify: true,
+        target: 'es2020',
+        legalComments: 'none',
+        logLevel: 'silent',
+      });
+      const code = result.code?.trim();
+      if (!code) return { ok: false, error: 'esbuild produziu código vazio' };
+      return { ok: true, code };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.debug(`esbuild falhou: ${msg}`);
+      return { ok: false, error: msg };
+    }
+  }
+
+  private async tryTerser(
+    js: string,
+  ): Promise<{ ok: true; code: string } | { ok: false; error: string }> {
+    try {
+      const result = await terserMinify(js, {
         ecma: 2020,
         compress: { negate_iife: false },
         mangle: true,
         format: { comments: false, beautify: false, semicolons: true },
       });
-
       const code = result.code?.trim();
-      if (!code || code.length === 0) {
-        this.logger.warn('Minificação produziu código vazio — salvando JS original');
-        return {
-          code: js,
-          minified: false,
-          warning: 'Minificação produziu código vazio — bundle salvo sem minificar',
-        };
-      }
-      return { code, minified: true };
+      if (!code) return { ok: false, error: 'terser produziu código vazio' };
+      return { ok: true, code };
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Falha ao minificar JS, salvando original: ${detail}`);
-      return {
-        code: js,
-        minified: false,
-        warning: `Não foi possível minificar (${detail}) — bundle salvo sem minificar`,
-      };
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.debug(`terser falhou: ${msg}`);
+      return { ok: false, error: msg };
     }
   }
 }
