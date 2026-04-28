@@ -16,6 +16,7 @@ interface DeployBundleResponse {
   inputSize: number;
   outputSize: number;
   blockCount: number;
+  removed: string[];
   minified: boolean;
   warning?: string;
 }
@@ -29,9 +30,10 @@ export class BundleController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async deploy(@Body() dto: CreateBundleDto): Promise<DeployBundleResponse> {
-    this.logger.log(
-      `POST /bundle recebido (content: ${dto.content.length} chars)`,
-    );
+    const summary = dto.scripts
+      ? `${dto.scripts.length} scripts nomeados`
+      : `content: ${dto.content?.length ?? 0} chars`;
+    this.logger.log(`POST /bundle recebido (${summary})`);
     return this.bundleService.deploy(dto);
   }
 }

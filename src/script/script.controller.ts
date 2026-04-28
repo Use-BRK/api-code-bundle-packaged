@@ -12,24 +12,34 @@ export class ScriptController {
   @Public()
   @Get('script.js')
   serve(@Res() res: Response): void {
-    const bundle = this.storage.getBundle();
-
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    if (!bundle || bundle.blocks.length === 0) {
-      this.logger.debug('GET /script.js — nenhum bundle deployado ainda');
-      res.status(200).send('/* nenhum bundle deployado ainda */\n');
+    const active = this.storage.getActiveBlocks();
+    if (active.blocks.length > 0) {
+      const loader = this.buildLoader(active.blocks);
+      this.logger.debug(
+        `GET /script.js — servindo loader com ${active.blocks.length} blocos ativos (sync em ${active.updatedAt})`,
+      );
+      res.status(200).send(loader);
       return;
     }
 
-    const loader = this.buildLoader(bundle.blocks);
-    this.logger.debug(
-      `GET /script.js — servindo loader com ${bundle.blocks.length} blocos (atualizado em ${bundle.updatedAt})`,
-    );
-    res.status(200).send(loader);
+    // Fallback para bundle no formato legado (single blob), caso ainda exista.
+    const legacy = this.storage.getBundle();
+    if (legacy && legacy.blocks.length > 0) {
+      const loader = this.buildLoader(legacy.blocks);
+      this.logger.debug(
+        `GET /script.js — servindo bundle legado com ${legacy.blocks.length} blocos`,
+      );
+      res.status(200).send(loader);
+      return;
+    }
+
+    this.logger.debug('GET /script.js — nenhum bundle deployado ainda');
+    res.status(200).send('/* nenhum bundle deployado ainda */\n');
   }
 
   // Gera um JS que, ao executar, injeta cada bloco como um <script> próprio.

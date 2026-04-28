@@ -11,8 +11,14 @@ interface DeployResult {
   inputSize: number;
   outputSize: number;
   blockCount: number;
+  removed: string[];
   minified: boolean;
   warning?: string;
+}
+
+interface NamedItem {
+  name: string;
+  content: string;
 }
 
 @Injectable()
@@ -22,30 +28,36 @@ export class BundleService {
   constructor(private readonly storage: StorageService) {}
 
   async deploy(dto: CreateBundleDto): Promise<DeployResult> {
-    const blocks = this.extractScriptBlocks(dto.content);
-    if (blocks.length === 0) {
+    const items = this.normalizeInput(dto);
+    if (items.length === 0) {
       throw new BadRequestException(
         'Conteúdo vazio — envie pelo menos um script com código executável',
       );
     }
 
-    const minifiedBlocks: string[] = [];
+    const minifiedItems: NamedItem[] = [];
     const warnings: string[] = [];
     let allMinified = true;
 
-    for (let i = 0; i < blocks.length; i++) {
-      const { code, minified, warning } = await this.tryMinify(blocks[i]);
-      minifiedBlocks.push(code);
+    for (const item of items) {
+      const { code, minified, warning } = await this.tryMinify(item.content);
+      minifiedItems.push({ name: item.name, content: code });
       if (!minified) {
         allMinified = false;
-        if (warning) warnings.push(`bloco #${i + 1}: ${warning}`);
+        if (warning) warnings.push(`${item.name}: ${warning}`);
       }
     }
 
-    const { updatedAt } = this.storage.saveBundle(minifiedBlocks);
-    const outputSize = minifiedBlocks.reduce((acc, b) => acc + b.length, 0);
+    const sync = this.storage.syncScripts(minifiedItems);
+    const inputSize =
+      dto.content?.length ??
+      (dto.scripts ?? []).reduce((acc, s) => acc + s.content.length, 0);
+    const outputSize = minifiedItems.reduce(
+      (acc, b) => acc + b.content.length,
+      0,
+    );
     this.logger.log(
-      `Bundle salvo (${blocks.length} blocos, ${dto.content.length} → ${outputSize} chars, allMinified=${allMinified}) em ${updatedAt}`,
+      `Bundle sincronizado (${items.length} scripts, ${sync.removed.length} removidos, ${inputSize} → ${outputSize} chars, allMinified=${allMinified}) em ${sync.syncedAt}`,
     );
 
     return {
@@ -53,13 +65,32 @@ export class BundleService {
       message: allMinified
         ? 'Bundle deployado'
         : 'Bundle deployado com falhas parciais de minificação',
-      deployedAt: updatedAt,
-      inputSize: dto.content.length,
+      deployedAt: sync.syncedAt,
+      inputSize,
       outputSize,
-      blockCount: blocks.length,
+      blockCount: items.length,
+      removed: sync.removed,
       minified: allMinified,
       ...(warnings.length ? { warning: warnings.join(' | ') } : {}),
     };
+  }
+
+  // Aceita os dois formatos: `scripts: [{name, content}]` (novo) ou
+  // `content: string` (legado com <script>…</script>).
+  private normalizeInput(dto: CreateBundleDto): NamedItem[] {
+    if (dto.scripts && dto.scripts.length > 0) {
+      return dto.scripts
+        .map((s) => ({ name: s.name.trim(), content: s.content.trim() }))
+        .filter((s) => s.name.length > 0 && s.content.length > 0);
+    }
+    if (dto.content && dto.content.trim().length > 0) {
+      const blocks = this.extractScriptBlocks(dto.content);
+      return blocks.map((content, idx) => ({
+        name: `block-${String(idx + 1).padStart(3, '0')}.js`,
+        content,
+      }));
+    }
+    return [];
   }
 
   // Extrai cada <script>...</script> como bloco SEPARADO. Tolerante a
