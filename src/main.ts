@@ -9,6 +9,18 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const config = app.get(ConfigService);
 
+  const rawOrigins = config.get<string>('CORS_ORIGINS', '*');
+  const origin =
+    rawOrigins.trim() === '*'
+      ? true
+      : rawOrigins.split(',').map((o) => o.trim()).filter(Boolean);
+  app.enableCors({
+    origin,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'x-api-key'],
+    maxAge: 86400,
+  });
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
