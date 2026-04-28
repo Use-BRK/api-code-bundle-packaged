@@ -15,7 +15,7 @@ interface BundleRow {
 }
 
 export interface StoredBundle {
-  content: string;
+  blocks: string[];
   updatedAt: string;
 }
 
@@ -57,8 +57,9 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  saveBundle(content: string): StoredBundle {
+  saveBundle(blocks: string[]): StoredBundle {
     const updatedAt = new Date().toISOString();
+    const content = JSON.stringify(blocks);
     this.db
       .prepare(
         `INSERT INTO bundle (id, content, updated_at)
@@ -69,7 +70,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       )
       .run({ content, updatedAt });
 
-    return { content, updatedAt };
+    return { blocks, updatedAt };
   }
 
   getBundle(): StoredBundle | null {
@@ -78,6 +79,19 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       .get() as BundleRow | undefined;
 
     if (!row) return null;
-    return { content: row.content, updatedAt: row.updated_at };
+
+    let blocks: string[] = [];
+    try {
+      const parsed = JSON.parse(row.content);
+      if (Array.isArray(parsed)) {
+        blocks = parsed.filter((b): b is string => typeof b === 'string');
+      } else if (typeof parsed === 'string' && parsed.length > 0) {
+        blocks = [parsed];
+      }
+    } catch {
+      // formato legado — bundle armazenado como blob de JS único
+      if (row.content.trim().length > 0) blocks = [row.content];
+    }
+    return { blocks, updatedAt: row.updated_at };
   }
 }

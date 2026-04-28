@@ -15,6 +15,7 @@ interface DeployBundleResponse {
   deployedAt: string;
   inputSize: number;
   outputSize: number;
+  blockCount: number;
   minified: boolean;
   warning?: string;
 }

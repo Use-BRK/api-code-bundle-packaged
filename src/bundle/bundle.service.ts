@@ -10,6 +10,7 @@ interface DeployResult {
   deployedAt: string;
   inputSize: number;
   outputSize: number;
+  blockCount: number;
   minified: boolean;
   warning?: string;
 }
@@ -21,36 +22,53 @@ export class BundleService {
   constructor(private readonly storage: StorageService) {}
 
   async deploy(dto: CreateBundleDto): Promise<DeployResult> {
-    const extracted = this.extractJavaScript(dto.content);
-    if (extracted.length === 0) {
+    const blocks = this.extractScriptBlocks(dto.content);
+    if (blocks.length === 0) {
       throw new BadRequestException(
         'Conteúdo vazio — envie pelo menos um script com código executável',
       );
     }
 
-    const { code, minified, warning } = await this.tryMinify(extracted);
+    const minifiedBlocks: string[] = [];
+    const warnings: string[] = [];
+    let allMinified = true;
 
-    const { updatedAt } = this.storage.saveBundle(code);
+    for (let i = 0; i < blocks.length; i++) {
+      const { code, minified, warning } = await this.tryMinify(blocks[i]);
+      minifiedBlocks.push(code);
+      if (!minified) {
+        allMinified = false;
+        if (warning) warnings.push(`bloco #${i + 1}: ${warning}`);
+      }
+    }
+
+    const { updatedAt } = this.storage.saveBundle(minifiedBlocks);
+    const outputSize = minifiedBlocks.reduce((acc, b) => acc + b.length, 0);
     this.logger.log(
-      `Bundle salvo (${dto.content.length} → ${extracted.length} → ${code.length} chars, minified=${minified}) em ${updatedAt}`,
+      `Bundle salvo (${blocks.length} blocos, ${dto.content.length} → ${outputSize} chars, allMinified=${allMinified}) em ${updatedAt}`,
     );
 
     return {
       success: true,
-      message: minified ? 'Bundle deployado' : 'Bundle deployado sem minificação',
+      message: allMinified
+        ? 'Bundle deployado'
+        : 'Bundle deployado com falhas parciais de minificação',
       deployedAt: updatedAt,
       inputSize: dto.content.length,
-      outputSize: code.length,
-      minified,
-      ...(warning ? { warning } : {}),
+      outputSize,
+      blockCount: blocks.length,
+      minified: allMinified,
+      ...(warnings.length ? { warning: warnings.join(' | ') } : {}),
     };
   }
 
-  // Extrai JS de blocos <script>...</script> tolerando </script> dentro de
-  // strings/templates/comentários. Sem tags <script>, trata o input como JS bruto.
-  private extractJavaScript(input: string): string {
+  // Extrai cada <script>...</script> como bloco SEPARADO. Tolerante a
+  // </script> dentro de strings/templates/comentários. Sem tags <script>,
+  // trata o input inteiro como um único bloco de JS bruto.
+  private extractScriptBlocks(input: string): string[] {
     if (!/<script\b/i.test(input)) {
-      return input.trim();
+      const trimmed = input.trim();
+      return trimmed.length > 0 ? [trimmed] : [];
     }
 
     const blocks: string[] = [];
@@ -71,7 +89,7 @@ export class BundleService {
       if (i <= 0) break;
     }
 
-    return blocks.join('\n;\n');
+    return blocks;
   }
 
   // Encontra o </script> de fechamento real, ignorando ocorrências dentro

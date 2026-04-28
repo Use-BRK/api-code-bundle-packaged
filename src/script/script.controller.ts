@@ -19,15 +19,40 @@ export class ScriptController {
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    if (!bundle) {
+    if (!bundle || bundle.blocks.length === 0) {
       this.logger.debug('GET /script.js — nenhum bundle deployado ainda');
       res.status(200).send('/* nenhum bundle deployado ainda */\n');
       return;
     }
 
+    const loader = this.buildLoader(bundle.blocks);
     this.logger.debug(
-      `GET /script.js — servindo bundle (atualizado em ${bundle.updatedAt}, ${bundle.content.length} chars)`,
+      `GET /script.js — servindo loader com ${bundle.blocks.length} blocos (atualizado em ${bundle.updatedAt})`,
     );
-    res.status(200).send(bundle.content);
+    res.status(200).send(loader);
+  }
+
+  // Gera um JS que, ao executar, injeta cada bloco como um <script> próprio.
+  // Cada bloco roda em seu próprio elemento, então: erro de sintaxe num bloco
+  // não impede os próximos de executar e o callstack de erros é separado.
+  private buildLoader(blocks: string[]): string {
+    const blocksJson = JSON.stringify(blocks);
+    return (
+      `/* chatwoot-script-bundle — ${blocks.length} blocos */\n` +
+      `(function(){` +
+      `var blocks=${blocksJson};` +
+      `var parent=document.head||document.documentElement;` +
+      `for(var i=0;i<blocks.length;i++){` +
+      `try{` +
+      `var s=document.createElement('script');` +
+      `s.setAttribute('data-bundle-block',String(i+1));` +
+      `s.textContent=blocks[i];` +
+      `parent.appendChild(s);` +
+      `}catch(e){` +
+      `(window.console&&console.error)&&console.error('[bundle] bloco '+(i+1)+' falhou:',e);` +
+      `}` +
+      `}` +
+      `})();\n`
+    );
   }
 }
