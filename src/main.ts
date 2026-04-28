@@ -16,7 +16,7 @@ async function bootstrap() {
       : rawOrigins.split(',').map((o) => o.trim()).filter(Boolean);
   app.enableCors({
     origin,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-api-key'],
     maxAge: 86400,
   });
