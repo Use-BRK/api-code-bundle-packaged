@@ -9,6 +9,8 @@ interface DeployResult {
   deployedAt: string;
   inputSize: number;
   outputSize: number;
+  minified: boolean;
+  warning?: string;
 }
 
 @Injectable()
@@ -21,71 +23,139 @@ export class BundleService {
     const extracted = this.extractJavaScript(dto.content);
     if (extracted.length === 0) {
       throw new BadRequestException(
-        'Nenhum bloco <script>...</script> com conteúdo executável encontrado',
+        'Conteúdo vazio — envie pelo menos um script com código executável',
       );
     }
 
-    const minified = await this.minifyToInline(extracted);
+    const { code, minified, warning } = await this.tryMinify(extracted);
 
-    const { updatedAt } = this.storage.saveBundle(minified);
+    const { updatedAt } = this.storage.saveBundle(code);
     this.logger.log(
-      `Bundle salvo (${dto.content.length} → ${extracted.length} → ${minified.length} chars) em ${updatedAt}`,
+      `Bundle salvo (${dto.content.length} → ${extracted.length} → ${code.length} chars, minified=${minified}) em ${updatedAt}`,
     );
 
     return {
       success: true,
-      message: 'Bundle deployed',
+      message: minified ? 'Bundle deployado' : 'Bundle deployado sem minificação',
       deployedAt: updatedAt,
       inputSize: dto.content.length,
-      outputSize: minified.length,
+      outputSize: code.length,
+      minified,
+      ...(warning ? { warning } : {}),
     };
   }
 
-  private extractJavaScript(html: string): string {
-    const blocks: string[] = [];
-    const regex = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  // Extrai JS de blocos <script>...</script> tolerando </script> dentro de
+  // strings/templates/comentários. Sem tags <script>, trata o input como JS bruto.
+  private extractJavaScript(input: string): string {
+    if (!/<script\b/i.test(input)) {
+      return input.trim();
+    }
 
-    for (const match of html.matchAll(regex)) {
-      const body = match[1].trim();
-      if (body.length > 0) {
-        blocks.push(body);
-      }
+    const blocks: string[] = [];
+    let i = 0;
+
+    while (i < input.length) {
+      const openMatch = /<script\b[^>]*>/i.exec(input.slice(i));
+      if (!openMatch) break;
+
+      const bodyStart = i + openMatch.index + openMatch[0].length;
+      const closeIdx = this.findScriptClose(input, bodyStart);
+      const bodyEnd = closeIdx === -1 ? input.length : closeIdx;
+      const body = input.slice(bodyStart, bodyEnd).trim();
+      if (body.length > 0) blocks.push(body);
+
+      if (closeIdx === -1) break;
+      i = input.indexOf('>', closeIdx) + 1;
+      if (i <= 0) break;
     }
 
     return blocks.join('\n;\n');
   }
 
-  private async minifyToInline(js: string): Promise<string> {
+  // Encontra o </script> de fechamento real, ignorando ocorrências dentro
+  // de strings, templates e comentários.
+  private findScriptClose(src: string, start: number): number {
+    let i = start;
+    let mode: 'code' | 'sq' | 'dq' | 'tpl' | 'line' | 'block' = 'code';
+
+    while (i < src.length) {
+      const ch = src[i];
+      const next = src[i + 1];
+
+      if (mode === 'code') {
+        if (ch === '/' && next === '/') { mode = 'line'; i += 2; continue; }
+        if (ch === '/' && next === '*') { mode = 'block'; i += 2; continue; }
+        if (ch === "'") { mode = 'sq'; i++; continue; }
+        if (ch === '"') { mode = 'dq'; i++; continue; }
+        if (ch === '`') { mode = 'tpl'; i++; continue; }
+        if (ch === '<' && src.slice(i, i + 8).toLowerCase() === '</script') {
+          return i;
+        }
+        i++;
+        continue;
+      }
+      if (mode === 'line') {
+        if (ch === '\n') mode = 'code';
+        i++;
+        continue;
+      }
+      if (mode === 'block') {
+        if (ch === '*' && next === '/') { mode = 'code'; i += 2; continue; }
+        i++;
+        continue;
+      }
+      if (mode === 'sq') {
+        if (ch === '\\') { i += 2; continue; }
+        if (ch === "'") mode = 'code';
+        i++;
+        continue;
+      }
+      if (mode === 'dq') {
+        if (ch === '\\') { i += 2; continue; }
+        if (ch === '"') mode = 'code';
+        i++;
+        continue;
+      }
+      if (mode === 'tpl') {
+        if (ch === '\\') { i += 2; continue; }
+        if (ch === '`') mode = 'code';
+        i++;
+        continue;
+      }
+    }
+    return -1;
+  }
+
+  private async tryMinify(
+    js: string,
+  ): Promise<{ code: string; minified: boolean; warning?: string }> {
     try {
       const result = await minify(js, {
-        compress: {
-          negate_iife: false,
-        },
+        ecma: 2020,
+        compress: { negate_iife: false },
         mangle: true,
-        format: {
-          comments: false,
-          beautify: false,
-          semicolons: true,
-        },
+        format: { comments: false, beautify: false, semicolons: true },
       });
 
       const code = result.code?.trim();
       if (!code || code.length === 0) {
-        throw new BadRequestException(
-          'Minificação produziu código vazio — verifique o conteúdo enviado',
-        );
+        this.logger.warn('Minificação produziu código vazio — salvando JS original');
+        return {
+          code: js,
+          minified: false,
+          warning: 'Minificação produziu código vazio — bundle salvo sem minificar',
+        };
       }
-
-      return code;
+      return { code, minified: true };
     } catch (error) {
-      if (error instanceof BadRequestException) throw error;
-
       const detail = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Falha ao minificar JS: ${detail}`);
-      throw new BadRequestException({
-        message: 'JavaScript inválido — não foi possível minificar',
-        detail,
-      });
+      this.logger.warn(`Falha ao minificar JS, salvando original: ${detail}`);
+      return {
+        code: js,
+        minified: false,
+        warning: `Não foi possível minificar (${detail}) — bundle salvo sem minificar`,
+      };
     }
   }
 }

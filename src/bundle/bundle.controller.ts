@@ -15,6 +15,8 @@ interface DeployBundleResponse {
   deployedAt: string;
   inputSize: number;
   outputSize: number;
+  minified: boolean;
+  warning?: string;
 }
 
 @Controller('bundle')
