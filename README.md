@@ -17,14 +17,7 @@ API REST em NestJS que recebe um bundle de scripts JavaScript e o expõe como um
 No Chatwoot Dashboard Scripts você cola **uma vez só** este loader:
 
 ```html
-<script>
-  (function () {
-    var s = document.createElement('script');
-    s.src = 'https://SUA-API-PUBLICA/script.js';
-    s.async = true;
-    document.head.appendChild(s);
-  })();
-</script>
+<script>(function(){var s=document.createElement('script');s.src='https://gerenciador-scripts-chatwoot-api-code-bundle-packaged.zxh6wu.easypanel.host/script.js';s.async=true;document.head.appendChild(s);})();</script>
 ```
 
 A partir daí, todo `POST /bundle` substitui o que sai em `/script.js`. Ao recarregar o dashboard, os agentes pegam a versão mais nova.
